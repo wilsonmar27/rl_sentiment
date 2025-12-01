@@ -126,6 +126,8 @@ def train_ddpg(
     val_frac: float = 0.15,
     device: str = "auto",
     seed: int = 0,
+    act_noise_start: float = 0.1,
+    act_noise_end: float = 0.02,
 ):
     """
     DDPG training:
@@ -211,10 +213,13 @@ def train_ddpg(
         start_index=0,
         end_index=None,
         initial_capital=1.0,
-        reward_mode="sharpe_proxy",   # was "return"
+        reward_mode="sharpe_proxy", 
         vol_idx=1,                    # market_vol index in STATE_FEATURE_COLS
-        risk_penalty=20.0,            # try 10–50 and see how Sharpe responds
+        risk_penalty=20.0,            # NTS: try 10–50 and see how Sharpe responds
     )
+    
+    act_noise_start = act_noise_start
+    act_noise_end = act_noise_end
 
     # 7) DDPG training loop
     state = env.reset()
@@ -226,6 +231,9 @@ def train_ddpg(
 
     print("Starting DDPG training...")
     for t in range(1, total_steps + 1):
+        # linearly decay noise
+        frac = min(1.0, t / total_steps)
+        current_noise_std = act_noise_start + frac * (act_noise_end - act_noise_start)
         # Select action
         if t < start_steps:
             # Exploration: random uniform action
@@ -236,7 +244,7 @@ def train_ddpg(
             with torch.no_grad():
                 s_t = torch.from_numpy(state.astype(np.float32)).to(device).unsqueeze(0)
                 a_t = actor(s_t).cpu().numpy().flatten()[0]
-            noise = np.random.normal(0.0, act_noise_std)
+            noise = np.random.normal(0.0, current_noise_std)
             action = np.clip(a_t + noise, 0.0, 1.0)
 
         # Step env
