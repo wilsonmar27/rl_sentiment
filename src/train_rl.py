@@ -118,9 +118,9 @@ def train_ddpg(
     batch_size: int = 64,
     replay_size: int = 100000,
     gamma: float = 0.99,
-    polyak: float = 0.995,
+    polyak: float = 0.997,
     actor_lr: float = 1e-4,
-    critic_lr: float = 1e-3,
+    critic_lr: float = 5e-4,
     act_noise_std: float = 0.1,
     train_frac: float = 0.74,
     val_frac: float = 0.15,
@@ -128,6 +128,7 @@ def train_ddpg(
     seed: int = 0,
     act_noise_start: float = 0.1,
     act_noise_end: float = 0.02,
+    opti_param: str = "sharpe",
 ):
     """
     DDPG training:
@@ -165,6 +166,10 @@ def train_ddpg(
     train_returns = splits["train"]["returns"]
     val_returns = splits["val"]["returns"]
     test_returns = splits["test"]["returns"]
+    
+    # Combined train + val set for model selection
+    dev_states = np.concatenate([train_states, val_states], axis=0)
+    dev_returns = np.concatenate([train_returns, val_returns], axis=0)
 
     print("Split sizes:")
     print("  Train:", train_states.shape[0])
@@ -213,9 +218,9 @@ def train_ddpg(
         start_index=0,
         end_index=None,
         initial_capital=1.0,
-        reward_mode="sharpe_proxy", 
+        reward_mode="return", 
         vol_idx=1,                    # market_vol index in STATE_FEATURE_COLS
-        risk_penalty=20.0,            # NTS: try 10–50 and see how Sharpe responds
+        risk_penalty=20.0,               # risk penalty for sharpe_proxy reward
     )
     
     act_noise_start = act_noise_start
@@ -310,24 +315,33 @@ def train_ddpg(
                     for p, p_targ in zip(critic.parameters(), critic_target.parameters()):
                         p_targ.data.mul_(polyak).add_((1 - polyak) * p.data)
 
-        # Periodically evaluate on validation set
-        if t % 5000 == 0 or t == total_steps:
-            print(f"\nStep {t}/{total_steps}: evaluating on validation set...")
-            val_metrics = evaluate_policy(actor, val_states, val_returns)
-            print("Student (RL) validation metrics:", val_metrics)
+        # Periodically evaluate on train+val ("dev") set
+        if t % 500 == 0 or t == total_steps:
+            print(f"\nStep {t}/{total_steps}: evaluating on train+val (dev) set...")
+            dev_metrics = evaluate_policy(actor, dev_states, dev_returns)
+            print("Student (RL) dev metrics:", dev_metrics)
 
-            # Teacher baseline on val
-            teacher_w_val = compute_teacher_weights(val_states, lambda_risk=lambda_risk)
-            teacher_ret_val, _ = simulate_teacher_equity(teacher_w_val, val_returns)
-            teacher_metrics = compute_simple_metrics(teacher_ret_val)
-            print("Teacher validation metrics    :", teacher_metrics)
+            # Teacher baseline on dev
+            teacher_w_dev = compute_teacher_weights(dev_states, lambda_risk=lambda_risk)
+            teacher_ret_dev, _ = simulate_teacher_equity(teacher_w_dev, dev_returns)
+            teacher_metrics = compute_simple_metrics(teacher_ret_dev)
+            print("Teacher dev metrics    :", teacher_metrics)
 
-            # Track best by Sharpe
-            val_sharpe = val_metrics.get("sharpe_ratio", 0.0)
-            if val_sharpe > best_val_sharpe:
-                best_val_sharpe = val_sharpe
-                best_actor_state_dict = copy.deepcopy(actor.state_dict())
-                print(f"New best validation Sharpe: {best_val_sharpe:.4f} (step {t})")
+            # Track best by Sharpe on dev
+            if opti_param == "sharpe":
+                dev_sharpe = dev_metrics.get("sharpe_ratio", 0.0)
+                if dev_sharpe > best_val_sharpe:
+                    best_val_sharpe = dev_sharpe
+                    best_actor_state_dict = copy.deepcopy(actor.state_dict())
+                    print(f"New best dev Sharpe: {best_val_sharpe:.4f} (step {t})")
+                    
+            # Track best by annualized return instead of Sharpe
+            elif opti_param == "return":
+                tv_return = dev_metrics.get("annualized_return", 0.0)
+                if tv_return > best_val_sharpe:
+                    best_val_sharpe = tv_return
+                    best_actor_state_dict = copy.deepcopy(actor.state_dict())
+                    print(f"New best train+val annualized return: {best_val_sharpe:.4f} (step {t})")
 
     # Load best actor
     actor.load_state_dict(best_actor_state_dict)
@@ -345,15 +359,16 @@ def train_ddpg(
     )
     print(f"\nSaved RL-trained actor to: {rl_actor_out_path}")
 
-    # 9) Final evaluation on validation & test
+    # 9) Final evaluation on dev (train+val) & test
     print("\nFinal evaluation (best RL actor):")
-    val_metrics = evaluate_policy(actor, val_states, val_returns)
-    teacher_w_val = compute_teacher_weights(val_states, lambda_risk=lambda_risk)
-    teacher_ret_val, _ = simulate_teacher_equity(teacher_w_val, val_returns)
-    teacher_val_metrics = compute_simple_metrics(teacher_ret_val)
 
-    print("Validation - Teacher:", teacher_val_metrics)
-    print("Validation - Student (RL):", val_metrics)
+    dev_metrics = evaluate_policy(actor, dev_states, dev_returns)
+    teacher_w_dev = compute_teacher_weights(dev_states, lambda_risk=lambda_risk)
+    teacher_ret_dev, _ = simulate_teacher_equity(teacher_w_dev, dev_returns)
+    teacher_dev_metrics = compute_simple_metrics(teacher_ret_dev)
+
+    print("Dev (train+val) - Teacher:", teacher_dev_metrics)
+    print("Dev (train+val) - Student (RL):", dev_metrics)
 
     test_metrics = evaluate_policy(actor, test_states, test_returns)
     teacher_w_test = compute_teacher_weights(test_states, lambda_risk=lambda_risk)
@@ -396,15 +411,25 @@ def parse_args():
         default=27,
         help="Random seed.",
     )
+    parser.add_argument(
+        "--opti_param",
+        type=str,
+        default="sharpe",
+        help="What optimization parameter to use (sharpe or return)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    optimization_param = args.opti_param.lower()
+    if optimization_param not in ["sharpe", "return"]:
+        raise ValueError("Invalid optimization parameter. Choose 'sharpe' or 'return'.")
     train_ddpg(
         csv_path=args.csv,
         supervised_actor_path=args.supervised_actor,
         rl_actor_out_path=args.out,
         total_steps=args.steps,
         seed=args.seed,
+        opti_param=optimization_param,
     )
