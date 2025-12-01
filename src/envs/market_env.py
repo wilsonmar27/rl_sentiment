@@ -26,6 +26,8 @@ class MarketEnv:
         end_index: Optional[int] = None,
         initial_capital: float = 1.0,
         reward_mode: str = "return",
+        vol_idx: int = 1,
+        risk_penalty: float = 0.0,
     ):
         """
         Parameters
@@ -53,6 +55,8 @@ class MarketEnv:
         self.end_index = end_index if end_index is not None else len(states)
         self.initial_capital = initial_capital
         self.reward_mode = reward_mode
+        self.vol_idx = vol_idx
+        self.risk_penalty = risk_penalty
 
         if self.end_index - self.start_index < 2:
             raise ValueError("Not enough timesteps in the selected range to run an episode.")
@@ -104,6 +108,11 @@ class MarketEnv:
         # Compute reward
         if self.reward_mode == "return":
             reward = daily_portfolio_ret
+        elif self.reward_mode == "sharpe_proxy":
+            # Get current volatility from state (e.g. index 1 = market_vol)
+            sigma_t = float(self.states[self.current_index][self.vol_idx])
+            sigma2_t = sigma_t * sigma_t
+            reward = daily_portfolio_ret - self.risk_penalty * (w_market ** 2) * sigma2_t
         else:
             raise NotImplementedError(f"Unknown reward_mode: {self.reward_mode}")
 

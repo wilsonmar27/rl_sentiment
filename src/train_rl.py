@@ -211,7 +211,9 @@ def train_ddpg(
         start_index=0,
         end_index=None,
         initial_capital=1.0,
-        reward_mode="return",
+        reward_mode="sharpe_proxy",   # was "return"
+        vol_idx=1,                    # market_vol index in STATE_FEATURE_COLS
+        risk_penalty=20.0,            # try 10–50 and see how Sharpe responds
     )
 
     # 7) DDPG training loop
