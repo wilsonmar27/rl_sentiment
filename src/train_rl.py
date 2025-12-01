@@ -84,6 +84,7 @@ def evaluate_policy(
     actor: ActorNet,
     states: np.ndarray,
     next_returns: np.ndarray,
+    w_max: float = 1.0,
 ) -> Dict[str, float]:
     """
     Run deterministic actor over a dataset slice (no env needed),
@@ -96,7 +97,8 @@ def evaluate_policy(
 
     with torch.no_grad():
         s_torch = torch.from_numpy(states.astype(np.float32)).to(device)
-        a = actor(s_torch).cpu().numpy().flatten()
+        a_raw = actor(s_torch).cpu().numpy().flatten()      # in [0,1]
+        a = np.clip(a_raw, 0.0, 1.0) * w_max                # effective weights in [0, w_max]
 
     # Simulate portfolio using same helper as teacher
     portfolio_ret, equity = simulate_teacher_equity(a, next_returns)

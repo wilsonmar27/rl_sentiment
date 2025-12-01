@@ -94,9 +94,9 @@ class MarketEnv:
         info : dict
             Contains debug info, e.g., 'portfolio_value', 'daily_return', 'weight_market'.
         """
-        # Clip action into [0, 1] to ensure valid allocation
-        w_market = float(np.clip(action, 0.0, 1.0))
-
+        w_max = 1.0  # e.g., allow up to 200% long the market
+        a_clipped = float(np.clip(action, 0.0, 1.0))  # actor output + noise still in [0,1]
+        w_market = a_clipped * w_max    
         # Use next_returns aligned with current_index
         # portfolio return r_p = w_market * market_return_next_day
         daily_market_ret = float(self.next_returns[self.current_index])
